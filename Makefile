@@ -12,7 +12,8 @@ install :
 	cp *.ko $(INSDIR)
 
 obj-m += led_2440.o
-
+#obj-m += key_2440.o
+obj-m += keyirq_2440.o
 
 
 
