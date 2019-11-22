@@ -19,7 +19,7 @@
 #include <asm/string.h>
 #include <asm/uaccess.h>
 #include <linux/wait.h>
-#include <asm/poll.h>
+#include <linux/poll.h>
 
 
 #define NAME 	"key_drvs"
@@ -32,7 +32,7 @@ MODULE_LICENSE("GPL");
 static int major;
 module_param(major, int, 0);
 MODULE_PARM_DESC(major, "Major device number");
-
+#define KEYS_SIZE 4
 
 /*
 *key0	EINT0	GPF0
@@ -46,27 +46,28 @@ struct key_2440
 	int major;				//主函数状态
 	int open_flag;			//open函数
 	int key_val;			//key状态
-	spinlock_t open_lock; 	//自旋锁变量
+	spinlock_t open_lock; 	//自旋锁
+	spinlock_t val_lock; 	//自旋锁
+	spinlock_t flag_lock; 	//自旋锁
 	rwlock_t   rwlock;		//读写锁
 	wait_queue_head_t key_queue; 
 	int wait_queue_flag;	
+	struct fasync_struct *key_async;
+	struct timer_list key_timer[KEYS_SIZE];
+	int timer_flag;	
 };
 struct key_irq_mode
 {
-	unsigned long irq;		//中断号
+	unsigned int irq;		//中断号
 	unsigned long flag; 	//触发方式
 	irq_handler_t handler; 	//中断处理函数 
 	char* drv_name;			//中断名 
-	
 };
 struct key_pin_mode
 {
 	unsigned long pin;
 	unsigned long mode;
 };
-
-
-
 static struct key_2440 *key_2440p;
 extern struct key_irq_mode key_irq_moded[];
 extern struct key_pin_mode key_pin_moded[];
@@ -74,20 +75,11 @@ extern struct key_pin_mode key_pin_moded[];
 static irqreturn_t key_interrupt(int irq, void *dev_id)
 {
 	int  subscript=(int) dev_id;
-	//printk(KERN_DEBUG"irq=%ud \n devname=%s\n",irq,key_irq_moded[subscript].drv_name);
-	if(s3c2410_gpio_getpin(key_pin_moded[subscript].pin))
-		key_2440p->key_val =(subscript+1);	
-	else
-		key_2440p->key_val =0-(subscript+1);
 	key_2440p->wait_queue_flag=1;
-	wake_up(&key_2440p->key_queue);
-	return 0;
+	//printk(KERN_DEBUG"irq=%ud \n devname=%s\n",irq,key_irq_moded[subscript].drv_name);
+	mod_timer(key_2440p->key_timer+subscript, jiffies+HZ/100);
+	return IRQ_RETVAL(IRQ_HANDLED);
 }
-
-
-
-
-
 
 struct key_irq_mode key_irq_moded[]={
 {IRQ_EINT0,IRQT_BOTHEDGE,key_interrupt,"S2"},
@@ -104,9 +96,24 @@ struct key_pin_mode key_pin_moded[KEY_GPIO_SIZE]={
 {S3C2410_GPG11,S3C2410_GPG11_INP}
 };
 
-
-
-
+void key_timerfunction(unsigned long subscript)
+{
+	unsigned long flags;
+	if(!key_2440p->wait_queue_flag)
+	{
+		return ;
+	}
+	
+	if(s3c2410_gpio_getpin(key_pin_moded[subscript].pin))
+		key_2440p->key_val =(subscript+1);
+	else
+		key_2440p->key_val =0-(subscript+1);
+	spin_lock_irqsave(key_2440p->flag_lock,flags);
+	key_2440p->wait_queue_flag=1;
+	spin_unlock_irqrestore(key_2440p->flag_lock,flags);
+	wake_up(&key_2440p->key_queue);
+	kill_fasync (&key_2440p->key_async, SIGIO, POLL_IN);
+}
 
 
 
@@ -129,7 +136,7 @@ static int key_drv_open(struct inode *inode, struct file *file)
 	{
 		irqval = request_irq(key_irq_moded[i].irq,key_irq_moded[i].handler,key_irq_moded[i].flag,key_irq_moded[i].drv_name,(void *)i);
 		if (irqval) {
-			printk(KERN_DEBUG "3c507: unable to get IRQ %d (irqval=%d).\n", key_irq_moded[i].irq, irqval);
+			printk(KERN_DEBUG "3c507: unable to get IRQ %u (irqval=%d).\n", key_irq_moded[i].irq, irqval);
 			return -EAGAIN;
 		}
 	}
@@ -149,7 +156,7 @@ static int key_release (struct inode *inodep, struct file *filp)
 
 	for(i=0;i<KEY_GPIO_SIZE;i++)
 	{
-		free_irq(key_irq_moded[i].irq,i);
+		free_irq(key_irq_moded[i].irq,(void *)i);
 	}
 	return 0;
 }
@@ -163,16 +170,33 @@ static ssize_t key_drv_read(struct file *file, char __user *buf,
 	
 	unsigned long flags;
 	printk(KERN_DEBUG"--------%s-------\n",__FUNCTION__);
+	if ((file->f_flags & O_NONBLOCK) ||(file->f_flags & FASYNC))
+	{
+		
+		spin_lock_irqsave(key_2440p->val_lock,flags);
+		if(copy_to_user(buf,&key_2440p->key_val,4))
+		{
+			spin_unlock_irqrestore(key_2440p->val_lock,flags);
+			return -EFAULT;
+		}
+		spin_unlock_irqrestore(key_2440p->val_lock,flags);
+		return 4;
+	}
+	
 	wait_event(key_2440p->key_queue,key_2440p->wait_queue_flag);
 	
-	//下面应该有一个关中断的过程
-  	local_irq_save(flags);
+	//下面应该有一个加锁的过程
+  	spin_lock_irqsave(key_2440p->val_lock,flags);
 	if(copy_to_user(buf,&key_2440p->key_val,4))
 	{
+		spin_unlock_irqrestore(key_2440p->val_lock,flags);
 		return -EFAULT;
 	}
+	spin_unlock_irqrestore(key_2440p->val_lock,flags);
+	
+	spin_lock_irqsave(key_2440p->flag_lock,flags);
 	key_2440p->wait_queue_flag=0;
-	local_irq_restore(flags);
+	spin_unlock_irqrestore(key_2440p->flag_lock,flags);
 	return 4;
 }
 static unsigned int key_poll(struct file *filp, struct poll_table_struct *wait)
@@ -186,20 +210,30 @@ static unsigned int key_poll(struct file *filp, struct poll_table_struct *wait)
 	}
 	return mask;
 }
+static int key_fasync(int fd, struct file *filp, int on)
+{
+	if (fasync_helper(fd, filp, on, &key_2440p->key_async) >= 0)
+		return 0;
+	else
+		return -EIO;
+}
+
 
 static const struct file_operations key_drv_fops = {
 	.owner	= THIS_MODULE,
 	.read	= key_drv_read,
 	.open	= key_drv_open,
 	.release= key_release,
-	.poll 	= key_poll
+	.poll 	= key_poll,
+	.fasync	= key_fasync,
 };
 
 static int __init key_drv_init(void)
 {
-	int err=0;
+	int err=0,i;
 	struct class_device *clsdev;
 	printk(KERN_DEBUG"--------%s call-------\n",__FUNCTION__);
+	//printk(KERN_INFO"%s",PRINT_MACRO(THIS_MODULE));
 	key_2440p=(struct key_2440*) kzalloc(sizeof(struct key_2440),GFP_KERNEL);
 	if(key_2440p==NULL)
 	{
@@ -207,9 +241,20 @@ static int __init key_drv_init(void)
 		goto kzallocError;
 	}
 	memset(key_2440p,0,sizeof(struct key_2440));
+	spin_lock_init(&key_2440p->val_lock);
+	spin_lock_init(&key_2440p->flag_lock);
 	spin_lock_init(&key_2440p->open_lock);
 	rwlock_init(&key_2440p->rwlock);
-	init_waitqueue_head(&key_2440p->key_queue); 
+	init_waitqueue_head(&key_2440p->key_queue);
+	//初始化定时器
+	for(i=0;i<KEYS_SIZE;i++)
+	{
+		init_timer(key_2440p->key_timer+i);
+		key_2440p->key_timer[i].data=i;
+		key_2440p->key_timer[i].function=key_timerfunction;
+		add_timer(key_2440p->key_timer+i);
+		
+	}
 	major = register_chrdev(major,NAME,&key_drv_fops);
 	if(major<0)
 	{
@@ -246,7 +291,10 @@ static int __init key_drv_init(void)
 
 static void __exit key_drv_exit(void)
 {
+	int i=0;
 	printk(KERN_DEBUG"--------%s-------\n",__FUNCTION__);
+	for(i=0;i<KEYS_SIZE;i++)
+		del_timer(key_2440p->key_timer+i);
 	class_device_destroy(key_2440p->key_class,MKDEV(key_2440p->major, 0));
 	class_destroy(key_2440p->key_class);
 	unregister_chrdev(key_2440p->major,NAME);

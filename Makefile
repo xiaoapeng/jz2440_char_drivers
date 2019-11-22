@@ -3,7 +3,7 @@ INSDIR	 := /home/plz/nfs/fs_mini_mdev/drv
 
 
 all :
-	make -C $(KERN_DIR) M=`pwd` modules 
+	make -C $(KERN_DIR) M=`pwd`  modules V=0 
 clean :
 	make -C $(KERN_DIR) M=`pwd` clean
 	rm -rf modules.order
@@ -14,7 +14,7 @@ install :
 obj-m += led_2440.o
 #obj-m += key_2440.o
 obj-m += keyirq_2440.o
-
+obj-m += keyinput_2440.o
 
 
 
