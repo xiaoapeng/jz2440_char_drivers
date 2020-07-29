@@ -33,32 +33,32 @@ static char *jz2440ts_name = "jz2440 TouchScreen";
 struct jz2440_ts{
 	struct input_dev *dev;
 	struct clk *adc_clock;
-	volatile struct jz2440ts_regs* adc_reg;
 	struct timer_list ts_timer;
 	int shift;
 };
 
 static struct jz2440_ts ts;
+volatile struct jz2440ts_regs* adc_reg;
 
 
 static inline void enter_wait_pen_down_mode(void)
 {
-	ts.adc_reg->adctsc = 0xd3;
+	adc_reg->adctsc = 0xd3;
 }
 
 static inline void enter_wait_pen_up_mode(void)
 {
-	ts.adc_reg->adctsc = 0x1d3;
+	adc_reg->adctsc = 0x1d3;
 }
 
 static inline void enter_measure_xy_mode(void)
 {
-	ts.adc_reg->adctsc = (1<<3)|(1<<2);
+	adc_reg->adctsc = (1<<3)|(1<<2);
 }
 
 static inline void start_adc(void)
 {
-	ts.adc_reg->adccon |= (1<<0);
+	adc_reg->adccon |= (1<<0);
 }
 //剔除偏移太大的值
 static int s3c_filter_ts(int x[], int y[])
@@ -96,11 +96,13 @@ static irqreturn_t adc_irq(int irq, void *dev_id)
 	int adcdat0, adcdat1;
 	
 	
-	adcdat0 =ts.adc_reg->adcdat0;
-	adcdat1 = ts.adc_reg->adcdat1;
+	//printk("转换结束\n");
+	adcdat0 =adc_reg->adcdat0;
+	adcdat1 = adc_reg->adcdat1;
 	//检测是否已经抬起
-	if (ts.adc_reg->adcdat0 & (1<<15))
-	{
+	if (adc_reg->adcdat0 & (1<<15))
+	{	
+		//printk("抬起了\n");
 		cnt = 0;
 		//压力值为0  笔尖已经抬起
 		input_report_abs(ts.dev, ABS_PRESSURE, 0);
@@ -120,6 +122,7 @@ static irqreturn_t adc_irq(int irq, void *dev_id)
 			if (s3c_filter_ts(x, y))
 			{	
 				//上报事件
+				//printk(KERN_INFO"x=%d  y=%d\n",(x[0]+x[1]+x[2]+x[3])/4,(y[0]+y[1]+y[2]+y[3])/4);
 				input_report_abs(ts.dev, ABS_X, (x[0]+x[1]+x[2]+x[3])/4);
 				input_report_abs(ts.dev, ABS_Y, (y[0]+y[1]+y[2]+y[3])/4);
 				input_report_abs(ts.dev, ABS_PRESSURE, 1);
@@ -145,9 +148,9 @@ static irqreturn_t adc_irq(int irq, void *dev_id)
 
 static irqreturn_t pen_down_up_irq(int irq, void *dev_id)
 {
-	if (ts.adc_reg->adcdat0 & (1<<15))
+	if (adc_reg->adcdat0 & (1<<15))
 	{
-		printk(KERN_INFO"pen up\n");
+		//printk(KERN_INFO"pen up\n");
 		//上传压力值和按键事件
 		input_report_abs(ts.dev, ABS_PRESSURE, 0);
 		input_report_key(ts.dev, BTN_TOUCH, 0);
@@ -157,7 +160,7 @@ static irqreturn_t pen_down_up_irq(int irq, void *dev_id)
 	}
 	else
 	{
-		printk(KERN_INFO"pen down\n");
+		//printk(KERN_INFO"pen down\n");
 		//enter_wait_pen_up_mode();
 		//进入xy轴转化模式
 		enter_measure_xy_mode();
@@ -169,7 +172,7 @@ static irqreturn_t pen_down_up_irq(int irq, void *dev_id)
 static void s3c_ts_timer_function(unsigned long data)
 {
 	//如果已经抬起直接上报事件
-	if (ts.adc_reg->adcdat0 & (1<<15))
+	if (adc_reg->adcdat0 & (1<<15))
 	{
 		//无压力值
 		input_report_abs(ts.dev, ABS_PRESSURE, 0);
@@ -212,17 +215,16 @@ static int jz2440ts_probe(struct platform_device *pdev)
 	ts.dev=input_dev;
 	//1.2设置input_dev结构体
 	//1.2.1能产生哪些事件
-	set_bit(EV_SYN,ts.dev->evbit);
 	set_bit(EV_KEY,ts.dev->evbit);
 	set_bit(EV_ABS,ts.dev->evbit);
+	
 	//1.2.2能产生按键事件里的哪些事件
 	set_bit(BTN_TOUCH,ts.dev->keybit);
+
 	input_set_abs_params(ts.dev,ABS_X,0,0x3ff,0,0);
 	input_set_abs_params(ts.dev,ABS_Y,0,0x3ff,0,0);
 	input_set_abs_params(ts.dev,ABS_PRESSURE,0,1,0,0);
-	//1.2.3其他设置
-	ts.dev->private = &ts;
-	ts.dev->name = jz2440ts_name;
+	
 	//ts.dev->id.bustype = BUS_RS232;
 	ts.shift = info->oversampling_shift;
 
@@ -237,8 +239,8 @@ static int jz2440ts_probe(struct platform_device *pdev)
 	}
 	clk_enable(ts.adc_clock);
 	//2.3寄存器映射
-	ts.adc_reg = ioremap(S3C2410_PA_ADC,sizeof(struct jz2440ts_regs));
-	if (ts.adc_reg == NULL) {
+	adc_reg = ioremap(S3C2410_PA_ADC,sizeof(struct jz2440ts_regs));
+	if (adc_reg == NULL) {
 		printk(KERN_ERR "Failed to remap register block\n");
 		ret=ENOMEM;
 		goto ioremap_adc_regs_error;
@@ -255,8 +257,7 @@ static int jz2440ts_probe(struct platform_device *pdev)
 	*	bit[0]		如果为1就会使能 这里先设置为 0x0
 	*/
 	if ((info->presc&0xff) > 0)
-		ts.adc_reg->adccon = (1<<14)|((info->presc&0xff)<<6);
-	ts.adc_reg->adccon = (1<<14)|(49<<6);
+		adc_reg->adccon = (1<<14)|((info->presc&0xff)<<6);
 	//2.5注册中断
 	if(request_irq(IRQ_TC,pen_down_up_irq,IRQF_SAMPLE_RANDOM,"ts_pen",NULL))
 	{
@@ -272,8 +273,8 @@ static int jz2440ts_probe(struct platform_device *pdev)
 		goto request_irq_IRQ_ADC_error;
 	}
 	//2.6 设置adc转化延时值 （待电压稳定再检测）
-	if ((info->delay&0xff) > 0)
-		ts.adc_reg->adcdly= (info->delay &0xff);
+	if ((info->delay&0xffff) > 0)
+		adc_reg->adcdly= (info->delay &0xffff);
 	//2.7配置定时器 使用定时器处理长按,滑动的情况
 	init_timer(&ts.ts_timer);
 	ts.ts_timer.function = s3c_ts_timer_function;
@@ -295,7 +296,7 @@ static int jz2440ts_probe(struct platform_device *pdev)
 	request_irq_IRQ_ADC_error:
 	free_irq(IRQ_TC,NULL);
 	request_irq_IRQ_TC_error:
-	iounmap(ts.adc_reg);
+	iounmap(adc_reg);
 	ioremap_adc_regs_error:
 	clk_disable(ts.adc_clock);
 	clk_put(ts.adc_clock);
@@ -310,7 +311,7 @@ static int jz2440ts_remove(struct platform_device *pdev)
 	del_timer(&ts.ts_timer);
 	free_irq(IRQ_ADC,NULL);
 	free_irq(IRQ_TC,NULL);
-	iounmap(ts.adc_reg);
+	iounmap(adc_reg);
 	clk_disable(ts.adc_clock);
 	clk_put(ts.adc_clock);
 	input_free_device(ts.dev);

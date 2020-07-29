@@ -5,11 +5,13 @@
 
 
 static struct s3c2410_ts_mach_info s3c2410_ts_cfg = {
-        .delay = 0xff,
+        .delay = 0xffff,
         .presc = 49,
         .oversampling_shift = 2,
 };
 
+static void	jz2440_ts_release(struct device * dev){}
+/* NULL */
 
 
 
@@ -17,7 +19,8 @@ static struct platform_device jz2440ts_device = {
 	.name		  = "jz2440-ts",
 	.id		  = -1,
 	.dev		={
-		.platform_data= &s3c2410_ts_cfg
+		.platform_data= &s3c2410_ts_cfg,
+		.release = jz2440_ts_release
 	}
 };
 
