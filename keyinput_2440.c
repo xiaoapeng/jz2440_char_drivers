@@ -122,6 +122,7 @@ static int __init gpio_keys_init(void)
 
 	//##主线##对input_dev进行一系列初始化 
 	set_bit(EV_KEY,keyinput_dev->evbit);
+	set_bit(EV_REP,keyinput_dev->evbit);
 	set_bit(KEY_L,keyinput_dev->keybit);
 	set_bit(KEY_S,keyinput_dev->keybit);
 	set_bit(KEY_ENTER,keyinput_dev->keybit);

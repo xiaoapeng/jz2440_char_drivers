@@ -235,6 +235,72 @@ static void __exit key_drv_exit(void)
 	unregister_chrdev(key_2440p->major,NAME);
 	kfree(key_2440p);
 }
+
+void hhaha(void)
+{
+	/*需要用到的定义*/
+	#define MYDEV_NUM       MKDEV(MYMAJOR, 0)
+	#define MYNAME      "mydevice"
+	#define MYDEV_CNT     3
+	
+	static struct cdev *mydev_pcdev;
+	static struct class *mydev_pclass;
+	dev_t mydev_num = 0;
+	unsigned int mydev_major = 0;
+	
+	/*正式开始注册*/
+	/*让内核给我们自动分配设备号（主次设备号）*/
+	ret = alloc_chrdev_region(&mydev_num, 0, MYDEV_CNT, MYNAME);
+	mydev_major = MAJOR(mydev_num);
+	if (ret < 0) {
+			printk(KERN_INFO "alloc_chrdev_region fail\n");
+			goto out_err_0;
+	}
+	printk(KERN_INFO "MAJOR %d\n", mydev_major);
+	
+	/*cdev_alloc实例化一个字符设备体。为cdev分配内存*/
+	mydev_pcdev = cdev_alloc();
+	
+	/*填充cdev设备体。最主要是将file_operations填充进去*/
+	cdev_init(mydev_pcdev, &mydev_fops);
+	
+	/*将设备体与设备号绑定并向内核注册一个字符设备*/
+	ret = cdev_add(mydev_pcdev, MYDEV_NUM, MYDEV_CNT);
+	if (ret) {
+			printk(KERN_INFO "cdev_add error\n");
+			goto out_err_1;
+	}
+	
+	/*用class_create创建一个设备类，这是创建设备文件的前置任务*/
+	mydev_pclass = class_create(THIS_MODULE, "mydevice");
+	if (IS_ERR(mydev_pclass)) { 	//排错
+	printk(KERN_ERR "can't register device mydevice class\n");
+			goto out_err_2;
+	}
+	
+	/*由device_create正式创建设备文件*/
+	device_create(mydev_pclass, NULL, MYDEV_NUM, NULL, "mydevice");
+	
+	return 0;
+	
+	/*倒影式错误处理流程*/
+	out_err_3:
+			class_destroy(mydev_pclass);
+	
+	out_err_2:
+			cdev_del(mydev_pcdev);
+	
+	out_err_1:
+			unregister_chrdev_region(mydev_num, MYDEV_CNT);
+	
+	out_err_0:
+			return -EINVAL;
+
+
+
+}
+
+
 //include/linux/init.h:228
 module_init(key_drv_init);
 module_exit(key_drv_exit);

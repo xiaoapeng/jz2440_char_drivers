@@ -206,6 +206,8 @@ static unsigned int key_poll(struct file *filp, struct poll_table_struct *wait)
 
 	if(key_2440p->wait_queue_flag)
 	{
+		//标记为数据可读
+		//该函数会被do_pollfd函数所调用
 		mask |=	POLLIN|POLLRDNORM;
 	}
 	return mask;
